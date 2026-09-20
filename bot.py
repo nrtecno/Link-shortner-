@@ -25,6 +25,7 @@ URL_REGEX = re.compile(r"https?://[^\s]+")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown", threaded=True)
 
+
 # ---------------- FORCE JOIN CHECK ----------------
 def is_user_joined(user_id: int) -> bool:
     try:
@@ -211,29 +212,61 @@ def fallback(message):
 # ---------------- HEALTH CHECK (Render ke liye) ----------------
 web_app = Flask(__name__)
 
+
 @web_app.route("/")
 def _health():
     return "🤖 Bot is alive!"
+
+
+# Telegram jab tak purana webhook hit kare, use 200 return karo (chup-chaap ignore)
+@web_app.route("/webhook/<path:token>", methods=["POST"])
+def _webhook_sink(token):
+    return "ok", 200
+
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
 
+
 threading.Thread(target=run_web, daemon=True).start()
 
 
 # ---------------- POLLING WRAPPER ----------------
+def clear_webhook():
+    """Telegram se webhook hatata hai taaki polling kaam kare."""
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        log.info("🧹 Webhook cleared (drop_pending_updates=True)")
+    except Exception as e:
+        log.warning(f"delete_webhook failed: {e}")
+
+
 def run_bot():
-    """Polling ko auto-restart karta hai — network blip pe bot na mare."""
+    """Webhook clear karke polling start karta hai — auto-restart on crash."""
+    # Start hote hi webhook clear karo
+    clear_webhook()
+
+    # Thoda wait — Telegram ko delete process karne ka time do
+    time.sleep(2)
+    clear_webhook()  # double-tap safety
+
     while True:
         try:
             log.info("🚀 Bot polling start...")
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
+            bot.infinity_polling(
+                timeout=30,
+                long_polling_timeout=20,
+                skip_pending=False,
+            )
         except Exception as e:
             log.exception(f"Polling crash: {e}")
             time.sleep(5)
+            clear_webhook()
+            time.sleep(2)
 
 
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
     log.info("🚀 Earning Link Bot starting (pyTelegramBotAPI)...")
     run_bot()
