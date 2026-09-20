@@ -23,8 +23,7 @@ LINKSTERR_API_KEY = os.environ["LINKSTERR_API_KEY"]
 CHANNEL_USERNAME  = os.environ.get("CHANNEL_USERNAME", "nr_hackz").lstrip("@")
 CHANNEL_LINK      = f"https://t.me/{CHANNEL_USERNAME}"
 
-# ⚠️ Apna Telegram user ID yahan daalo
-# @userinfobot se pata karo
+# Apna Telegram user ID (@userinfobot se)
 OWNER_ID          = int(os.environ.get("OWNER_ID", "0"))
 
 LINKSTERR_BASE    = "https://linksterr.com/user-api/v1"
@@ -35,7 +34,7 @@ DB_PATH   = "users.db"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown", threaded=True)
 
-# Admin states: {owner_id: "ON"/"OFF"}
+# Broadcast state (memory me)
 CAST_STATE = {"enabled": False}
 
 
@@ -71,23 +70,28 @@ def db_save_user(user):
                 username   = excluded.username,
                 last_seen  = excluded.last_seen,
                 is_blocked = 0
-        """, (user.id, user.first_name or "", user.username or "", int(time.time()), int(time.time())))
+        """, (user.id, user.first_name or "", user.username or "",
+              int(time.time()), int(time.time())))
         conn.commit()
         conn.close()
     except Exception as e:
         log.warning(f"db_save_user error: {e}")
 
 
-def db_count_users():
+def db_stats():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 0")
+        c.execute("SELECT COUNT(*) FROM users")
         total = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 0")
+        active = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE links_made > 0")
+        earners = c.fetchone()[0]
         conn.close()
-        return total
+        return {"total": total, "active": active, "earners": earners}
     except Exception:
-        return 0
+        return {"total": 0, "active": 0, "earners": 0}
 
 
 def db_all_user_ids():
@@ -139,8 +143,8 @@ def join_keyboard():
 
 
 def main_keyboard():
+    """Clean keyboard — sirf Help button."""
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK))
     kb.add(types.InlineKeyboardButton("❓ Help", callback_data="help"))
     return kb
 
@@ -152,6 +156,18 @@ def send_join_prompt(chat_id, first_name):
         "🔒 Bot use karne ke liye pehle hamara channel *join* karna zaroori hai.\n\n"
         "👇 Neeche ke button se join karo, phir *✅ I Joined* pe click karo.",
         reply_markup=join_keyboard(),
+        disable_web_page_preview=True,
+    )
+
+
+def send_welcome(chat_id, first_name):
+    bot.send_message(
+        chat_id,
+        f"✅ *Welcome {first_name}!*\n\n"
+        "Ab apna *long link* bhejo (YouTube, Drive, kuch bhi).\n"
+        "Main usko *earning short link* me convert kar dunga 💰\n\n"
+        "*Example:*\n`https://youtube.com/watch?v=xxxxx`",
+        reply_markup=main_keyboard(),
         disable_web_page_preview=True,
     )
 
@@ -193,7 +209,7 @@ def shorten_link(long_url: str):
             log.info(f"Linksterr [{resp.status_code}] body={list(body.keys())}: {resp.text[:200]}")
 
             if "text/html" in resp.headers.get("Content-Type", ""):
-                return None, "Linksterr HTML return kar raha hai — endpoint check karo."
+                return None, "Linksterr HTML return kar raha hai."
 
             if resp.status_code in (200, 201):
                 try:
@@ -233,7 +249,6 @@ def shorten_link(long_url: str):
 
 # ---------------- BROADCAST ----------------
 def broadcast_message(from_chat_id, message):
-    """Admin ke message ko sab users ko forward karta hai."""
     user_ids = db_all_user_ids()
     total = len(user_ids)
     if total == 0:
@@ -252,7 +267,7 @@ def broadcast_message(from_chat_id, message):
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err or "chat not found" in err:
                 db_mark_blocked(uid)
-        time.sleep(0.05)  # rate limit safe
+        time.sleep(0.05)
 
     try:
         bot.edit_message_text(
@@ -267,7 +282,25 @@ def broadcast_message(from_chat_id, message):
         pass
 
 
-# ---------------- HANDLERS ----------------
+# ==================================================
+# HANDLERS (ORDER MATTERS — broadcast pehle!)
+# ==================================================
+
+# --------- Broadcast capture (sirf ON state me owner ke messages) ---------
+# Ye handler SABSE PEHLE register hoga taaki owner ka broadcast message
+# normal link-handler me na chala jaye.
+@bot.message_handler(
+    func=lambda m: m.from_user.id == OWNER_ID
+                  and CAST_STATE["enabled"]
+                  and not (m.text or "").startswith("/"),
+    content_types=["text", "photo", "video", "document", "audio",
+                   "voice", "sticker", "animation"]
+)
+def capture_broadcast(message):
+    broadcast_message(message.chat.id, message)
+
+
+# --------- /start ---------
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user = message.from_user
@@ -277,20 +310,11 @@ def start_handler(message):
         send_join_prompt(message.chat.id, user.first_name)
         return
 
-    # Joined hai — DB me save karo
     db_save_user(user)
-
-    bot.send_message(
-        message.chat.id,
-        f"✅ *Welcome {user.first_name}!*\n\n"
-        "Ab apna *long link* bhejo (YouTube, Drive, kuch bhi).\n"
-        "Main usko *earning short link* me convert kar dunga 💰\n\n"
-        "*Example:*\n`https://youtube.com/watch?v=xxxxx`",
-        reply_markup=main_keyboard(),
-        disable_web_page_preview=True,
-    )
+    send_welcome(message.chat.id, user.first_name)
 
 
+# --------- /help ---------
 @bot.message_handler(commands=["help"])
 def help_handler(message):
     bot.send_message(
@@ -315,7 +339,7 @@ def cast_handler(message):
         bot.reply_to(message, "❌ Ye command sirf owner use kar sakta hai.")
         return
 
-    total = db_count_users()
+    s = db_stats()
     state = "🟢 ON" if CAST_STATE["enabled"] else "🔴 OFF"
 
     kb = types.InlineKeyboardMarkup()
@@ -327,10 +351,12 @@ def cast_handler(message):
     bot.send_message(
         message.chat.id,
         f"📢 *Broadcast Panel*\n\n"
-        f"👥 Total users: `{total}`\n"
+        f"👥 Total users: `{s['total']}`\n"
+        f"✅ Active users: `{s['active']}`\n"
+        f"🔗 Users jinhone link banaya: `{s['earners']}`\n\n"
         f"📡 Status: *{state}*\n\n"
-        "ON karo → jo message bhejoge woh sab users ko jayega\n"
-        "OFF karo → bot normal mode me",
+        "🟢 ON → jo message bhejoge woh sab users ko jayega\n"
+        "🔴 OFF → bot normal mode me",
         reply_markup=kb,
     )
 
@@ -341,8 +367,12 @@ def cast_on_cb(callback):
         bot.answer_callback_query(callback.id, "❌ Sirf owner!", show_alert=True)
         return
     CAST_STATE["enabled"] = True
-    bot.answer_callback_query(callback.id, "🟢 Broadcast ON — ab message bhejo", show_alert=True)
-    bot.send_message(callback.message.chat.id, "🟢 *Broadcast ON*\nAb jo bhi message bhejoge woh sab users ko jayega.\nBand karne ke liye /cast → OFF.")
+    bot.answer_callback_query(callback.id, "🟢 Broadcast ON", show_alert=True)
+    bot.send_message(
+        callback.message.chat.id,
+        "🟢 *Broadcast ON*\n\nAb jo bhi message bhejoge woh sab users ko forward hoga.\n"
+        "Band karne ke liye /cast → 🔴 OFF."
+    )
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "cast_off")
@@ -353,16 +383,6 @@ def cast_off_cb(callback):
     CAST_STATE["enabled"] = False
     bot.answer_callback_query(callback.id, "🔴 Broadcast OFF", show_alert=True)
     bot.send_message(callback.message.chat.id, "🔴 *Broadcast OFF*\nBot normal mode me aa gaya.")
-
-
-# --------- Broadcast capture (sirf tab jab ON ho) ---------
-@bot.message_handler(
-    func=lambda m: m.from_user.id == OWNER_ID and CAST_STATE["enabled"]
-                  and not (m.text or "").startswith("/"),
-    content_types=["text", "photo", "video", "document", "audio", "voice", "sticker", "animation"]
-)
-def capture_broadcast(message):
-    broadcast_message(message.chat.id, message)
 
 
 # --------- Force-join check callback ---------
@@ -395,16 +415,18 @@ def help_cb(callback):
     )
 
 
-# --------- Link shortening ---------
-@bot.message_handler(func=lambda m: m.text and URL_REGEX.search(m.text) and m.from_user.id != OWNER_ID)
+# --------- Link shortening (owner bhi use kar sakta hai) ---------
+@bot.message_handler(func=lambda m: m.text and URL_REGEX.search(m.text))
 def shorten_handler(message):
     user_id = message.from_user.id
 
-    if not is_user_joined(user_id):
+    # Owner ko force-join se chhoot (optional — chaho to hata do)
+    if user_id != OWNER_ID and not is_user_joined(user_id):
         send_join_prompt(message.chat.id, message.from_user.first_name)
         return
 
     db_save_user(message.from_user)
+
     urls = URL_REGEX.findall(message.text)
     if not urls:
         bot.reply_to(message, "❌ Valid link bhejo.")
@@ -430,7 +452,6 @@ def shorten_handler(message):
 
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🔗 Open Link", url=short_url))
-    kb.add(types.InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK))
 
     bot.edit_message_text(
         "✅ *Earning Link Ready!* 💰\n\n"
@@ -443,13 +464,14 @@ def shorten_handler(message):
     )
 
 
-# --------- Fallback ---------
+# --------- Fallback (non-link text) ---------
 @bot.message_handler(
     func=lambda m: m.text and not m.text.startswith("/")
                   and not URL_REGEX.search(m.text)
-                  and m.from_user.id != OWNER_ID
 )
 def fallback(message):
+    if message.from_user.id == OWNER_ID:
+        return  # owner ko fallback nahi chahiye
     if not is_user_joined(message.from_user.id):
         send_join_prompt(message.chat.id, message.from_user.first_name)
         return
