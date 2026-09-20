@@ -391,7 +391,7 @@ def check_join_cb(callback):
         db_save_user(callback.from_user)
         bot.edit_message_text(
             f"✅ *Verified {callback.from_user.first_name}!*\n\n"
-            "Ab apna *long link* bhejo — main earning link bana dunga 💰",
+            "TYPE YOUR LINK FOR SHORTEN",
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
             reply_markup=main_keyboard(),
@@ -409,7 +409,7 @@ def check_join_cb(callback):
 def help_cb(callback):
     bot.answer_callback_query(
         callback.id,
-        "Link bhejo → short link milega → share karo → paisa kamao 💰",
+        "SEND LINK→ GET LINK → SHARE ",
         show_alert=True,
     )
 
@@ -455,7 +455,7 @@ def shorten_handler(message):
     bot.edit_message_text(
         "✅ *Earning Link Ready!* 💰\n\n"
         f"`{short_url}`\n\n"
-        "👆 Isko copy karke share karo. Har click se paisa milega!",
+        "👆 Isko copy karke share karo.!",
         chat_id=status_msg.chat.id,
         message_id=status_msg.message_id,
         reply_markup=kb,
