@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import logging
 import threading
 
@@ -20,6 +21,16 @@ BOT_TOKEN         = os.environ["BOT_TOKEN"]
 LINKSTERR_API_KEY = os.environ["LINKSTERR_API_KEY"]
 CHANNEL_USERNAME  = os.environ.get("CHANNEL_USERNAME", "nr_hackz").lstrip("@")
 CHANNEL_LINK      = f"https://t.me/{CHANNEL_USERNAME}"
+
+# ⚠️ YAHAN APNA SAHI ENDPOINT DAALO (Linksterr dashboard se check karke)
+# Common possibilities:
+#   "https://linksterr.com/api"
+#   "https://linksterr.com/api/v1/shorten"
+#   "https://api.linksterr.com/v1/shorten"
+LINKSTERR_ENDPOINT = os.environ.get(
+    "LINKSTERR_ENDPOINT",
+    "https://linksterr.com/api"
+)
 
 URL_REGEX = re.compile(r"https?://[^\s]+")
 
@@ -51,37 +62,133 @@ def main_keyboard():
 
 
 # ---------------- LINKSTERR SHORTENER ----------------
+def _extract_short(data):
+    """Har possible response format se short URL nikaalo."""
+    if not isinstance(data, dict):
+        return None
+
+    # Nested paths pehle check karo
+    candidates = [
+        data.get("shortenedUrl"),
+        data.get("short"),
+        data.get("short_url"),
+        data.get("shortened_url"),
+        data.get("url"),
+        data.get("link"),
+        (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
+        (data.get("result") or {}).get("shortenedUrl") if isinstance(data.get("result"), dict) else None,
+        (data.get("data") or {}).get("short_url") if isinstance(data.get("data"), dict) else None,
+        (data.get("data") or {}).get("url") if isinstance(data.get("data"), dict) else None,
+    ]
+    for c in candidates:
+        if c and isinstance(c, str) and c.startswith("http"):
+            return c
+    return None
+
+
 def shorten_link(long_url: str):
-    """Linksterr.com API se short link banata hai. (short_url, error) return karta hai."""
-    api_url = "https://linksterr.com/api"
-    params = {"api": LINKSTERR_API_KEY, "url": long_url}
+    """Linksterr API se short link banata hai. (short_url, error) return karta hai."""
+    if not LINKSTERR_API_KEY or not LINKSTERR_API_KEY.startswith("lnk_"):
+        return None, "LINKSTERR_API_KEY invalid lag rahi hai (lnk_ se start honi chahiye)."
 
-    try:
-        resp = requests.get(api_url, params=params, timeout=30)
-        log.info(f"Linksterr [{resp.status_code}]: {resp.text[:200]}")
+    # Try multiple auth styles — jo chal jaye wahi use karo
+    attempts = [
+        # Style 1: GET query params
+        {
+            "method": "GET",
+            "url": LINKSTERR_ENDPOINT,
+            "params": {"api": LINKSTERR_API_KEY, "url": long_url},
+            "headers": {},
+            "json": None,
+        },
+        # Style 2: POST JSON body
+        {
+            "method": "POST",
+            "url": LINKSTERR_ENDPOINT,
+            "params": {},
+            "headers": {"Content-Type": "application/json"},
+            "json": {"api": LINKSTERR_API_KEY, "url": long_url},
+        },
+        # Style 3: Bearer header
+        {
+            "method": "GET",
+            "url": LINKSTERR_ENDPOINT,
+            "params": {"url": long_url},
+            "headers": {"Authorization": f"Bearer {LINKSTERR_API_KEY}"},
+            "json": None,
+        },
+    ]
 
+    last_error = "Unknown error"
+
+    for i, attempt in enumerate(attempts, 1):
         try:
-            data = resp.json()
-        except ValueError:
-            return None, f"API error: {resp.text[:120]}"
+            if attempt["method"] == "GET":
+                resp = requests.get(
+                    attempt["url"],
+                    params=attempt["params"],
+                    headers=attempt["headers"],
+                    timeout=30,
+                )
+            else:
+                resp = requests.post(
+                    attempt["url"],
+                    json=attempt["json"],
+                    headers=attempt["headers"],
+                    timeout=30,
+                )
 
-        if isinstance(data, dict):
-            short = (
-                data.get("shortenedUrl")
-                or data.get("short")
-                or data.get("short_url")
-                or (data.get("result") or {}).get("url")
-            )
+            log.info(f"Linksterr attempt #{i} [{resp.status_code}]: {resp.text[:200]}")
+
+            # HTML response detect karo (endpoint galat hai)
+            ctype = resp.headers.get("Content-Type", "")
+            body_start = resp.text.strip()[:20].lower()
+            if "text/html" in ctype or body_start.startswith("<!doctype") or body_start.startswith("<html"):
+                last_error = (
+                    "❌ Linksterr API endpoint HTML return kar raha hai.\n"
+                    "Dashboard se sahi API endpoint check karo aur "
+                    "`LINKSTERR_ENDPOINT` env var me daalo."
+                )
+                continue
+
+            # JSON parse karo
+            try:
+                data = resp.json()
+            except ValueError:
+                last_error = f"Invalid JSON response: {resp.text[:200]}"
+                continue
+
+            # Short link nikalo
+            short = _extract_short(data)
             if short:
                 return short, None
-            if data.get("status") == "error":
-                return None, data.get("message", "Unknown error")
-        return None, "Short link nahi mila"
-    except requests.Timeout:
-        return None, "API timeout"
-    except Exception as e:
-        log.exception("Shorten error")
-        return None, str(e)
+
+            # Error message nikalo
+            if isinstance(data, dict):
+                err = (
+                    data.get("message")
+                    or data.get("error")
+                    or data.get("msg")
+                    or data.get("status")
+                )
+                if err:
+                    last_error = f"API error: {err}"
+                    continue
+
+            last_error = f"Short link nahi mila. Response: {json.dumps(data)[:250]}"
+
+        except requests.Timeout:
+            last_error = "API timeout — Linksterr server slow hai"
+            continue
+        except requests.exceptions.ConnectionError:
+            last_error = "Connection error — endpoint URL check karo"
+            continue
+        except Exception as e:
+            log.exception(f"Attempt #{i} crashed")
+            last_error = str(e)
+            continue
+
+    return None, last_error
 
 
 # ---------------- HANDLERS ----------------
@@ -174,7 +281,7 @@ def shorten_handler(message):
     short_url, error = shorten_link(long_url)
     if not short_url:
         bot.edit_message_text(
-            f"❌ *Fail ho gaya!*\n`{error}`",
+            f"❌ *Fail ho gaya!*\n\n{error}",
             chat_id=status_msg.chat.id,
             message_id=status_msg.message_id,
         )
@@ -218,7 +325,7 @@ def _health():
     return "🤖 Bot is alive!"
 
 
-# Telegram jab tak purana webhook hit kare, use 200 return karo (chup-chaap ignore)
+# Telegram jab tak purana webhook hit kare, use 200 return karo
 @web_app.route("/webhook/<path:token>", methods=["POST"])
 def _webhook_sink(token):
     return "ok", 200
@@ -244,12 +351,9 @@ def clear_webhook():
 
 def run_bot():
     """Webhook clear karke polling start karta hai — auto-restart on crash."""
-    # Start hote hi webhook clear karo
     clear_webhook()
-
-    # Thoda wait — Telegram ko delete process karne ka time do
     time.sleep(2)
-    clear_webhook()  # double-tap safety
+    clear_webhook()
 
     while True:
         try:
@@ -269,4 +373,5 @@ def run_bot():
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
     log.info("🚀 Earning Link Bot starting (pyTelegramBotAPI)...")
+    log.info(f"📡 Linksterr endpoint: {LINKSTERR_ENDPOINT}")
     run_bot()
