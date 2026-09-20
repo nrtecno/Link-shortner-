@@ -1,11 +1,25 @@
 
 import os
 import requests
+import threading
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
 
+# --- Flask server for Render Web Service ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "NR Hackz Bot is Running! Bot is alive."
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- Telegram Bot Config ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_KEY = os.getenv("API_KEY")  # lnk_8bRfhHM32fzyHQn74sOmJIAnP8D3PEdyNbvjeyyW
+API_KEY = os.getenv("API_KEY")
 CHANNEL_USERNAME = "nr_hackz"
 CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME}"
 
@@ -16,43 +30,32 @@ def is_user_joined(user_id):
         member = bot.get_chat_member(f"@{CHANNEL_USERNAME}", user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
-        print(f"Join check error (bot admin banao): {e}")
-        return True  # Agar admin nahi hai to allow kar dega taki bot na ruke
+        print(f"Join check error (bot ko admin banao @nr_hackz me): {e}")
+        return True
 
 def short_with_linksterr(long_url):
-    """
-    Linksterr API - Correct format
-    Docs ke mutabik API key header me Bearer token ke roop me jata hai
-    """
     try:
-        # Linksterr ka official API endpoint
         api_url = "https://linksterr.com/api/links"
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        payload = {
-            "url": long_url
-            # "alias": "custom" # chahe to custom alias bhi de sakta hai
-        }
+        payload = {"url": long_url}
         
         res = requests.post(api_url, json=payload, headers=headers, timeout=15)
         print(f"Linksterr Response: {res.status_code} - {res.text}")
         
         if res.status_code in [200, 201]:
             data = res.json()
-            # Response format: { "short_url": "https://linksterr.com/r/xxxx", "link": ... }
-            return data.get("short_url") or data.get("link") or data.get("data", {}).get("short_url")
+            return data.get("short_url") or data.get("link") or data.get("data", {}).get("short_url") or data.get("data", {}).get("link")
         else:
-            # Fallback: Kuch APIs query param se bhi kaam karti hai
             fallback_url = f"https://linksterr.com/api?api={API_KEY}&url={long_url}"
             res2 = requests.get(fallback_url, timeout=10)
             if res2.status_code == 200:
                 j = res2.json()
                 return j.get("shortenedUrl") or j.get("short_url")
             return None
-            
     except Exception as e:
         print(f"Shorten error: {e}")
         return None
@@ -74,7 +77,6 @@ def start(message):
             reply_markup=join_keyboard()
         )
         return
-    
     bot.send_message(
         message.chat.id,
         "💰 *NR Hackz Earning Bot Ready!*\n\n"
@@ -99,33 +101,29 @@ def handle_link(message):
     if not is_user_joined(message.from_user.id):
         bot.send_message(message.chat.id, f"⛔ Pehle @{CHANNEL_USERNAME} join karo!", reply_markup=join_keyboard())
         return
-
     long_url = message.text.strip()
     if not long_url.startswith("http"):
         bot.reply_to(message, "❌ Sahi link bhejo, jaise https://youtube.com/...")
         return
-
     loading = bot.reply_to(message, "⏳ Linksterr par link bana raha hu...")
     s_link = short_with_linksterr(long_url)
-
     if s_link:
         bot.edit_message_text(
-            f"✅ *Link Ready!*\n\n"
-            f"💰 Earning Link:\n{s_link}\n\n"
-            f"Har click ka paisa tere Linksterr dashboard me ayega:\n"
-            f"https://linksterr.com/dashboard",
+            f"✅ *Link Ready!*\n\n💰 Earning Link:\n{s_link}\n\nDashboard: https://linksterr.com/dashboard",
             chat_id=message.chat.id,
             message_id=loading.message_id,
             parse_mode="Markdown"
         )
     else:
         bot.edit_message_text(
-            "❌ API Error. Render ke logs check karo.\n"
-            "Ho sakta hai API endpoint galat ho. Linksterr dashboard -> API Docs se endpoint confirm karo.",
+            "❌ API Error. Render logs me Linksterr Response check karo.",
             chat_id=message.chat.id,
             message_id=loading.message_id
         )
 
-print("Bot Started...")
-bot.infinity_polling()
-            
+if __name__ == "__main__":
+    # Flask ko alag thread me chalao taki Render port detect kar le
+    threading.Thread(target=run_flask, daemon=True).start()
+    print("Bot Started...")
+    bot.infinity_polling()
+    
