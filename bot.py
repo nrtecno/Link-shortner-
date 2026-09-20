@@ -164,8 +164,7 @@ def send_welcome(chat_id, first_name):
     bot.send_message(
         chat_id,
         f"✅ *Welcome {first_name}!*\n\n"
-        "Ab apna *long link* bhejo (YouTube, Drive, kuch bhi).\n"
-        "Main usko *earning short link* me convert kar dunga 💰\n\n"
+        "SEND YOUR LINK FOR SHORTEN\n"
         "*Example:*\n`https://youtube.com/watch?v=xxxxx`",
         reply_markup=main_keyboard(),
         disable_web_page_preview=True,
