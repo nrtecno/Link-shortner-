@@ -1,34 +1,23 @@
 
 import os
+import time
 import requests
-import threading
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask
+from flask import Flask, request, abort
 
 app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "NR Hackz Bot is Running! Bot is alive."
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 CHANNEL_USERNAME = "nr_hackz"
 CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME}"
 
-bot = telebot.TeleBot(BOT_TOKEN)
+# Render tumhe ye URL dega, agar nahi hai to manual daal do
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL") or "https://link-shortner-hin5.onrender.com"
+WEBHOOK_URL = f"{RENDER_URL}/webhook/{BOT_TOKEN}"
 
-# --- Fix 409 Conflict ---
-try:
-    bot.delete_webhook(drop_pending_updates=True)
-    print("Webhook deleted, polling clean")
-except Exception as e:
-    print(f"Webhook delete error: {e}")
+bot = telebot.TeleBot(BOT_TOKEN)
 
 def is_user_joined(user_id):
     try:
@@ -40,80 +29,52 @@ def is_user_joined(user_id):
 
 def short_with_linksterr(long_url):
     print(f"Trying to shorten: {long_url}")
-    # List of all possible formats Linksterr might use
-    attempts = []
-
-    # 1. Official Bearer format
+    # Try 1: Bearer
     try:
-        print("Attempt 1: Bearer Token")
+        print("Attempt 1: Bearer")
         res = requests.post(
             "https://linksterr.com/api/links",
             json={"url": long_url},
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             timeout=15
         )
-        print(f"Attempt 1 Response: {res.status_code} - {res.text[:500]}")
+        print(f"A1: {res.status_code} - {res.text[:600]}")
         if res.status_code in [200, 201]:
             data = res.json()
-            link = data.get("short_url") or data.get("link") or data.get("data", {}).get("short_url") or data.get("url")
-            if link:
-                return link
+            link = data.get("short_url") or data.get("link") or data.get("data", {}).get("short_url")
+            if link: return link
     except Exception as e:
-        print(f"Attempt 1 Error: {e}")
+        print(f"A1 Error: {e}")
 
-    # 2. API Key header format
+    # Try 2: x-api-key
     try:
-        print("Attempt 2: X-API-KEY header")
+        print("Attempt 2: X-API-KEY")
         res = requests.post(
             "https://linksterr.com/api/links",
             json={"url": long_url},
             headers={"X-API-KEY": API_KEY, "Content-Type": "application/json"},
             timeout=15
         )
-        print(f"Attempt 2 Response: {res.status_code} - {res.text[:500]}")
-        if res.status_code in [200, 201]:
-            data = res.json()
-            link = data.get("short_url") or data.get("link") or data.get("data", {}).get("short_url")
-            if link:
-                return link
-    except Exception as e:
-        print(f"Attempt 2 Error: {e}")
-
-    # 3. Old style GET API
-    try:
-        print("Attempt 3: GET ?api=KEY&url=")
-        res = requests.get(
-            f"https://linksterr.com/api?api={API_KEY}&url={long_url}",
-            timeout=15
-        )
-        print(f"Attempt 3 Response: {res.status_code} - {res.text[:500]}")
-        if res.status_code == 200:
-            data = res.json()
-            link = data.get("shortenedUrl") or data.get("short_url") or data.get("link")
-            if link:
-                return link
-    except Exception as e:
-        print(f"Attempt 3 Error: {e}")
-
-    # 4. /api/v1/shorten
-    try:
-        print("Attempt 4: /api/v1/links")
-        res = requests.post(
-            "https://linksterr.com/api/v1/links",
-            json={"url": long_url},
-            headers={"Authorization": f"Bearer {API_KEY}"},
-            timeout=15
-        )
-        print(f"Attempt 4 Response: {res.status_code} - {res.text[:500]}")
+        print(f"A2: {res.status_code} - {res.text[:600]}")
         if res.status_code in [200, 201]:
             data = res.json()
             link = data.get("short_url") or data.get("link")
-            if link:
-                return link
+            if link: return link
     except Exception as e:
-        print(f"Attempt 4 Error: {e}")
+        print(f"A2 Error: {e}")
 
-    print("All attempts failed")
+    # Try 3: GET api
+    try:
+        print("Attempt 3: GET")
+        res = requests.get(f"https://linksterr.com/api?api={API_KEY}&url={long_url}", timeout=15)
+        print(f"A3: {res.status_code} - {res.text[:600]}")
+        if res.status_code == 200:
+            data = res.json()
+            link = data.get("shortenedUrl") or data.get("short_url")
+            if link: return link
+    except Exception as e:
+        print(f"A3 Error: {e}")
+
     return None
 
 def join_keyboard():
@@ -124,28 +85,18 @@ def join_keyboard():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = message.from_user.id
-    if not is_user_joined(user_id):
-        bot.send_message(
-            message.chat.id,
-            f"⚠️ Bot use karne se pehle channel join karna zaruri hai.\n\n👉 @{CHANNEL_USERNAME} ko join karo, fir 'I Joined' dabao.",
-            reply_markup=join_keyboard()
-        )
+    if not is_user_joined(message.from_user.id):
+        bot.send_message(message.chat.id, f"⚠️ Pehle @{CHANNEL_USERNAME} join karo, fir 'I Joined' dabao.", reply_markup=join_keyboard())
         return
-    bot.send_message(
-        message.chat.id,
-        "💰 *NR Hackz Earning Bot Ready!*\n\nKoi bhi link bhejo, main Linksterr se earning link bana dunga.\n\n🌍 US - $3.25 / 1000 clicks\n🇩🇪 Germany - $10.50 / 1000 clicks\n\nLink bhejo 👇",
-        parse_mode="Markdown"
-    )
+    bot.send_message(message.chat.id, "💰 *NR Hackz Bot Ready!*\n\nLink bhejo earning ke liye 👇", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_joined")
 def check_joined(call):
-    user_id = call.from_user.id
-    if is_user_joined(user_id):
+    if is_user_joined(call.from_user.id):
         bot.answer_callback_query(call.id, "Verified!")
-        bot.send_message(call.message.chat.id, "✅ Verification ho gaya! Ab koi bhi link bhejo.")
+        bot.send_message(call.message.chat.id, "✅ Ho gaya! Ab link bhejo.")
     else:
-        bot.answer_callback_query(call.id, "❌ Abhi tak join nahi kiya!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Join nahi kiya!", show_alert=True)
 
 @bot.message_handler(func=lambda m: True)
 def handle_link(message):
@@ -154,26 +105,36 @@ def handle_link(message):
         return
     long_url = message.text.strip()
     if not long_url.startswith("http"):
-        bot.reply_to(message, "❌ Sahi link bhejo, jaise https://youtube.com/...")
+        bot.reply_to(message, "❌ Sahi link bhejo")
         return
-    loading = bot.reply_to(message, "⏳ Linksterr par link bana raha hu... (thoda time lagega)")
+    loading = bot.reply_to(message, "⏳ Linksterr par bana raha hu...")
     s_link = short_with_linksterr(long_url)
     if s_link:
-        bot.edit_message_text(
-            f"✅ *Link Ready!*\n\n💰 Earning Link:\n{s_link}\n\nDashboard: https://linksterr.com/dashboard",
-            chat_id=message.chat.id,
-            message_id=loading.message_id,
-            parse_mode="Markdown"
-        )
+        bot.edit_message_text(f"✅ *Link Ready!*\n\n💰 {s_link}\n\nDashboard: https://linksterr.com/dashboard", chat_id=message.chat.id, message_id=loading.message_id, parse_mode="Markdown")
     else:
-        bot.edit_message_text(
-            "❌ API Error. Render logs me dekho kaunsa Attempt fail hua.\n\nAgar 401/403 aaya to API Key galat hai. Agar 404 aaya to endpoint galat hai. Screenshot bhejo.",
-            chat_id=message.chat.id,
-            message_id=loading.message_id
-        )
+        bot.edit_message_text("❌ API Error. Logs me Attempt dekho aur mujhe bhejo.", chat_id=message.chat.id, message_id=loading.message_id)
 
+@app.route('/')
+def home():
+    return "NR Hackz Bot is Running!"
+
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    else:
+        abort(403)
+
+# Webhook setup
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    print("Bot Started...")
-    bot.infinity_polling()
+    print(f"Setting webhook to {WEBHOOK_URL}")
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=WEBHOOK_URL)
+    print(f"Webhook set: {WEBHOOK_URL}")
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
     
